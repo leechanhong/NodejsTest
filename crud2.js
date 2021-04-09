@@ -15,10 +15,14 @@ var bodyParser = require('body-parser')
 , static = require('serve-static')
 , errorHandler = require('errorhandler');
 
+//에러 핸들러 모듈 사용
+var expressErrorHandler = require('express-error-handler');
+
+// Session 미들웨어 불러오기
+var expressSession = require('express-session');
+
 // Mysql 데이터베이스를 사용할 수 있도록 하는 모듈 불러오기
 var mysql = require('mysql');
-const { callbackify } = require('util');
-const { Router } = require('express');
 
 // Mysql 데이터베이스 연결 설정
 var pool = mysql.createPool({
@@ -36,8 +40,23 @@ var app = express();
 // 기본환경설정 env 들어있는 port정보 또는 우리가 지정한 3000 웹서버 포트 생성
 app.set('port',process.env.PORT || 3000);
 
+//body-parser form-urlencoding 설정
+app.use(bodyParser.urlencoded({extended:false}));
+//body-parser에서 json파싱
+app.use(bodyParser.json());
+
 // public 폴더를 static 콘텐츠 공간으로 생성
 app.use('/public', static(path.join(__dirname,'public')));
+
+// 쿠기파서 설정
+app.use(cookieParser());
+
+//세션 설정
+app.use(expressSession({
+    secret:'my key',
+    resave:true,
+    saveUninitialized:true
+}));
 
 // 데이터베이스 커넥션 확인
 if(pool) {
@@ -62,11 +81,109 @@ if(pool) {
 
 // 라우팅 시작(URL매핑 스프링의 컨트롤러)
 var router = express.Router(); //URL매핑 객체생성
-// 라우터 객체 등록
-app.use('/',router);
 
 // 초기페이지 연결
 router.route('/').get(function(req, res){
     res.status(200);
     res.sendFile(path.join(__dirname,'public','listuser2.html'));
+});
+//리스트사용자페이지 연결
+router.route('/process/listuser').post(function(req,res){
+    console.log('/process/listuser 호출됨');
+    if(pool) {
+        allUser(function(err, result){
+            if(err) {
+                console.error('사용자 리스트 조회 중 에러 발생 : '+err.stack);
+                //에러상황을 브라우저에 출력함.
+                res.writeHead('200',{'Content-Type':'text/html;charset=utf8'});
+                res.write('<h2>사용자 리스트 조회 중 에러 발생</h2>');
+                res.write('<p>'+err.stack+'</p>');
+                res.end();
+                return;
+            }
+            if(result) {
+                console.dir(result);
+                //사용자리스트를 브라우저화면에 뿌려줌
+                res.writeHead('200',{'Content-Type':'text/html;charset-utf8'});
+                res.write('<h2>사용자 리스트</h2>');
+                res.write('<table style="border:1px solid black">');
+                for(var i=0; i<result.length; i++) {
+                    res.write('<tr><td>'+i+'</td><td>'+result[i].id+'</td><td>'+result[i].name+'</td></tr>');
+                }
+                res.write('</table>');
+                res.end();
+            }else{
+                res.writeHead('200',{'Content-Type':'text/html;charset=utf8'});
+                res.write('<h2>조회된 값이 없습니다.</h2>');
+                res.write('<a href="/">이전화면으로</a>');
+                res.end();
+            }
+        });
+    }else{
+        //pool이 false일때
+        res.writeHead('200',{'Content-Type':'text/html;charset-utf8'});
+        res.write('<h2>데이터베이스 연결 실패.</h2>');
+        res.end();
+    }
+});
+//리스트사용자 DAO처리 함수
+var allUser = function(callback) {
+    console.log('allUser함수형변수가 호출됨: ');
+    pool.getConnection(function(err, conn){
+      if(err) {
+          if(conn) {
+              conn.release();//기존커넥션을 연결해제.
+          }
+          callback(err, null);
+          return;
+      }
+      console.log('데이터베이스 연결 스레드 아이디: '+ conn.threadId);
+      var columns = ['id','name','age'];
+      var tablename = 'users';
+      //SQL문을 실행 preparedStatement 미리정의된 SQL문
+      var exec = conn.query("select ?? from ??",[columns,tablename],function(err,rows){
+        conn.release();//연결해제.
+        console.log('실행 대상 SQL : '+ exec.sql);
+        if(rows.length > 0) {
+            console.log('사용자 리스트 있음');
+            callback(null, rows);//result변수에 들어가는 값이됨.
+        }else{
+            console.log('사용자 리스트가 없음.');
+            callback(null,null);
+        }
+      });
+      conn.on('error', function(err){
+          console('데이터베이스 에러가 발생 되었습니다.');
+          console.dir(err);
+          callback(err,null);
+      });
+    });
+};
+
+
+// 라우터 /를 기본설정
+app.use('/',router);
+
+//에러 페이지 처리
+var errorHandler = expressErrorHandler({
+    static: {
+        '404':'./public/404.html'
+    }
+});
+app.use(expressErrorHandler.httpError(404));//객체등록
+app.use(errorHandler);//객체등록
+
+// 프로세서 종료시 데이터베이스 연결 해제
+process.on('SIGALRM', function(){
+    console.log("프로세스가 종료됩니다.");
+    if(conn) { conn.release(); }
+});
+app.on('close', function(){
+    console.log("앱이 종료됩니다.");
+    if(conn) { conn.release(); }
+});
+
+// Express서버 시작 명령(아래)
+http.createServer(app).listen(app.get('port'), function(){
+    console.log('서버가 시작되었습니다. 포트:' + app.get('port'));
 });
